@@ -1,0 +1,429 @@
+<!-- For licensing see accompanying LICENSE file. Copyright (C) 2026 Apple Inc. All Rights Reserved. -->
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#0f172a">
+    <title>GHARP: Real-time Gaussian Head Animation from Large-scale Reconstruction Prior</title>
+
+    <!-- SEO meta -->
+    <meta name="description" content="GHARP is a feed-forward method for real-time animation of photorealistic 3D Gaussian head avatars. We decouple identity reconstruction from animation: a canonical Gaussian UV map is built once offline, then a lightweight network predicts expression-dependent residuals at runtime — up to 13x faster than FastGHA on A100 with 8x fewer Gaussians.">
+    <meta name="keywords" content="GHARP, 3D Gaussian Splatting, head animation, real-time avatar, Gaussian heads, blendshape animation, body alignment network, computer vision, machine learning, deep learning, neural rendering, Apple, research paper, 3DGS, Avat3r, FastGHA, Ava-256">
+    <meta name="robots" content="index, follow">
+
+    <!-- Open Graph -->
+    <meta property="og:type" content="article">
+    <meta property="og:title" content="GHARP: Real-time Gaussian Head Animation from Large-scale Reconstruction Prior">
+    <meta property="og:description" content="A feed-forward method for real-time animation of photorealistic 3D Gaussian head avatars. State-of-the-art quality at a fraction of the runtime cost.">
+    <meta property="og:site_name" content="Apple Machine Learning Research">
+
+    <!-- Twitter Card -->
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="GHARP: Real-time Gaussian Head Animation from Large-scale Reconstruction Prior">
+    <meta name="twitter:description" content="Feed-forward real-time animation of 3D Gaussian head avatars by Apple. Up to 13x faster than FastGHA on A100 with 8x fewer Gaussians.">
+
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<header class="hero">
+    <div class="hero-overlay"></div>
+    <div class="hero-content">
+        <h1 class="hero-full-title">Real-time Gaussian Head Animation<br>from Large-scale Reconstruction Prior</h1>
+        <p class="hero-affiliation">Apple</p>
+        <p class="hero-authors">Ali Benlalah, Sepehr Johari, Patricia Vitoria, Armin Kappeler, Artem Sevastopolsky, Alexander Jung, Gabriele Fanelli, Kevin Mader, Manuel Breitenstein, Claudia Plüss, Jan Rüegg, Simon Biland, Thomas Etterlin, Dmitry Kostiaev, Mathias Deschler, Brian Amberg, Sebastian Martin</p>
+    </div>
+</header>
+
+<nav id="main-nav">
+    <ul>
+        <li><a href="#overview">Overview</a></li>
+        <li><a href="#abstract">Abstract</a></li>
+        <li><a href="#retargeting">Cross-Identity Retargeting</a></li>
+        <li><a href="#ban">Body Alignment Network</a></li>
+        <li><a href="#qualitative">Qualitative Comparison</a></li>
+        <li><a href="#in-the-wild">In-The-Wild</a></li>
+        <li><a href="#citation">Citation</a></li>
+    </ul>
+</nav>
+
+<!-- §1 OVERVIEW -->
+<section id="overview">
+    <div class="section-header">
+        <span class="section-number">01</span>
+        <div>
+            <h2>Overview</h2>
+            <p class="section-desc">A short overview of our method and results.</p>
+        </div>
+    </div>
+    <div class="hero-figs">
+        <figure class="tldr-fig" style="flex: 2.156 1 0;">
+            <figcaption><strong>GHARP</strong> animates a subject from a set of input images and an expression code, and enables retargeting of the same expression to new subjects with state-of-the-art quality.</figcaption>
+            <img src="images/teaser.png" alt="Cross enactment: different subjects animated by our method">
+        </figure>
+        <figure class="tldr-fig" style="flex: 1.203 1 0;">
+            <figcaption>Runtime on A100 vs. reconstruction quality (PSNR) on Ava-256 for 1, 2, and 4 input images. Marker size is proportional to Gaussian count. <strong>GHARP</strong> is an order of magnitude faster.</figcaption>
+            <img src="images/runtime_vs_PSNR.png" alt="Runtime vs. PSNR plot">
+        </figure>
+    </div>
+</section>
+
+<!-- §2 ABSTRACT -->
+<section id="abstract" class="fade-in">
+    <div class="section-header">
+        <span class="section-number">02</span>
+        <div>
+            <h2>Abstract</h2>
+        </div>
+    </div>
+    <p class="abstract-text">
+        We present <strong>GHARP</strong> (Real-time Gaussian Head Animation from Large-scale Reconstruction Prior), a method that animates 3D human heads in real time from a few input images of a subject and a driving expression signal.
+        We decouple the problem into an identity stage that builds a representation of the subject's geometry and appearance offline, and an animation stage that predicts expression-dependent residuals on top of it at runtime.
+        This separation offers a favorable tradeoff with respect to fidelity, quality and runtime: the identity stage can be expensive while the animation stage runs a lightweight network, optimized for mobile devices.
+        Our method performs animation in a semantically structured latent space of a pretrained reconstruction model, where expression changes remain spatially contained, making residual prediction efficient.
+        This reconstruction prior provides a consistent spatial layout, allowing fusion of multiple input views into a compact, fixed-size canonical Gaussian representation.
+        While this two-stage design solves the runtime&ndash;quality tradeoff, it still inherits a problem common to all expression-driven avatar methods: expression codes describe only the face and thus omit body pose and clothing position, making these regions underspecified in the input.
+        The animation network faces an ill-posed mapping and resorts to averaging over conflicting body appearances, producing blur and temporal flicker.
+        We address this with a body alignment network that learns to align the person's body in the target image with the input reference images, removing the ambiguity from the training signal.
+        Our method achieves state-of-the-art quality on the Ava-256 benchmark while running up to 13&times; faster on an A100 GPU with 8&times; fewer Gaussians.
+    </p>
+</section>
+
+<!-- §3 CROSS-IDENTITY RETARGETING -->
+<section id="retargeting" class="fade-in">
+    <div class="section-header">
+        <span class="section-number">03</span>
+        <div>
+            <h2>Cross-Identity Retargeting</h2>
+        </div>
+    </div>
+
+    <figure class="video-fig video-switcher">
+        <figcaption>
+            <strong>Cross-identity retargeting.</strong>
+            Five columns, left to right:
+            (1) input images defining the avatar identity,
+            (2) the driving expression, sourced from a <em>different</em> subject,
+            (3) Avat3r, (4) FastGHA, (5) Ours.
+            We retarget the driving expression onto the identity; our method transfers the expression with state-of-the-art fidelity while faithfully preserving the target identity.
+        </figcaption>
+        <div class="video-frame" style="aspect-ratio: 1952 / 552;">
+            <video id="xid-video" controls preload="metadata" playsinline width="1952" height="552">
+                <source src="videos/x_enact/comparison_sample_0.mp4" type="video/mp4">
+                Your browser does not support HTML5 video.
+            </video>
+        </div>
+        <div class="thumb-bar" id="xid-thumbs">
+            <div class="thumb active" data-src="videos/x_enact/comparison_sample_0.mp4"><canvas></canvas><span>Sample 1</span></div>
+            <div class="thumb" data-src="videos/x_enact/comparison_sample_1.mp4"><canvas></canvas><span>Sample 2</span></div>
+            <div class="thumb" data-src="videos/x_enact/comparison_sample_2.mp4"><canvas></canvas><span>Sample 3</span></div>
+            <div class="thumb" data-src="videos/x_enact/comparison_sample_3.mp4"><canvas></canvas><span>Sample 4</span></div>
+        </div>
+    </figure>
+</section>
+
+<!-- §4 BODY ALIGNMENT NETWORK -->
+<section id="ban" class="fade-in">
+    <div class="section-header">
+        <span class="section-number">04</span>
+        <div>
+            <h2>Body Alignment Network</h2>
+        </div>
+    </div>
+
+    <figure>
+        <figcaption><strong>Body Alignment Network (BAN).</strong> BAN takes the body pose from the reference image and the facial expression from the target image, producing a target that is consistent in body appearance with the reference (see cyan boxes).</figcaption>
+        <img src="images/fig_4.png" alt="Body Alignment Network: body-aligned supervision targets">
+    </figure>
+
+    <figure class="video-fig video-switcher">
+        <figcaption>
+            <strong>Impact of the Body Alignment Network (Ava-256).</strong>
+            Five columns, left to right:
+            (1) input images,
+            (2) FastGHA,
+            (3) Avat3r,
+            (4) Ours <em>without</em> body alignment network,
+            (5) Ours <em>with</em> body alignment network.
+            The body alignment network removes the body jitter in the animation sequence.
+        </figcaption>
+        <div class="video-frame" style="aspect-ratio: 1698 / 642;">
+            <video id="ban-video" controls preload="metadata" playsinline width="1698" height="642">
+                <source src="videos/bam/20230717_0836_PSV686.mp4" type="video/mp4">
+                Your browser does not support HTML5 video.
+            </video>
+        </div>
+        <div class="thumb-bar" id="ban-thumbs">
+            <div class="thumb active" data-src="videos/bam/20230717_0836_PSV686.mp4"><canvas></canvas><span>PSV686</span></div>
+            <div class="thumb" data-src="videos/bam/20210922_0839_UHV563.mp4"><canvas></canvas><span>UHV563</span></div>
+            <div class="thumb" data-src="videos/bam/20220406_1314_PGO261.mp4"><canvas></canvas><span>PGO261</span></div>
+            <div class="thumb" data-src="videos/bam/20220412_1326_BGR645.mp4"><canvas></canvas><span>BGR645</span></div>
+            <div class="thumb" data-src="videos/bam/20230322_1706_IBQ026.mp4"><canvas></canvas><span>IBQ026</span></div>
+            <div class="thumb" data-src="videos/bam/20230412_1218_LCJ763.mp4"><canvas></canvas><span>LCJ763</span></div>
+            <div class="thumb" data-src="videos/bam/20230413_1031_PDG961.mp4"><canvas></canvas><span>PDG961</span></div>
+            <div class="thumb" data-src="videos/bam/20230629_1159_APP152.mp4"><canvas></canvas><span>APP152</span></div>
+            <div class="thumb" data-src="videos/bam/20230807_0839_TCE049.mp4"><canvas></canvas><span>TCE049</span></div>
+            <div class="thumb" data-src="videos/bam/20230808_1157_YJF815.mp4"><canvas></canvas><span>YJF815</span></div>
+            <div class="thumb" data-src="videos/bam/20230920_1404_INQ807.mp4"><canvas></canvas><span>INQ807</span></div>
+            <div class="thumb" data-src="videos/bam/20230925_1644_KWL586.mp4"><canvas></canvas><span>KWL586</span></div>
+        </div>
+    </figure>
+
+    <figure>
+        <figcaption><strong>Temporal Stability.</strong> The colors show the per-pixel temporal standard deviation across an animation sequence driven by a facial expression code. Bright body regions (cyan boxes) reveal jitter unrelated to the expression. Avat3r, FastGHA, and Ours all exhibit this jitter, whereas Ours<sub>+BAN</sub>, trained against body-aligned supervision targets, keeps the body stable.</figcaption>
+        <img src="images/fig_5.png" alt="Per-pixel temporal standard deviation across an animation sequence">
+    </figure>
+
+    <figure>
+        <figcaption><strong>Qualitative results with Body Alignment.</strong> Ours<sub>+BAN</sub> produces sharp, geometrically consistent body regions (earrings/tattoos), whereas the other methods exhibit blurry artifacts or implausible geometry in those areas.</figcaption>
+        <div class="image-grid six-col">
+            <div><div class="cap">Input</div></div>
+            <div><div class="cap">Avat3r</div></div>
+            <div><div class="cap">FastGHA</div></div>
+            <div><div class="cap">Ours</div></div>
+            <div><div class="cap">Ours+BAN</div></div>
+            <div><div class="cap">GT</div></div>
+
+            <div><img src="images/ava256_crossexpr_comp/20220412--1326--BGR645__EXP_eyebrow_0_input.jpg" alt="Input"></div>
+            <div class="zoom-cell"><img src="images/ava256_crossexpr_comp/20220412--1326--BGR645__EXP_eyebrow_0_avat3r.jpg" alt="Avat3r"><div class="zoom-inset inset-a zrow-ban1a" style="background-image:url('images/ava256_crossexpr_comp/20220412--1326--BGR645__EXP_eyebrow_0_avat3r.jpg')"></div><div class="zoom-inset inset-b zrow-ban1b" style="background-image:url('images/ava256_crossexpr_comp/20220412--1326--BGR645__EXP_eyebrow_0_avat3r.jpg')"></div></div>
+            <div class="zoom-cell"><img src="images/ava256_crossexpr_comp/20220412--1326--BGR645__EXP_eyebrow_0_fastgha.jpg" alt="FastGHA"><div class="zoom-inset inset-a zrow-ban1a" style="background-image:url('images/ava256_crossexpr_comp/20220412--1326--BGR645__EXP_eyebrow_0_fastgha.jpg')"></div><div class="zoom-inset inset-b zrow-ban1b" style="background-image:url('images/ava256_crossexpr_comp/20220412--1326--BGR645__EXP_eyebrow_0_fastgha.jpg')"></div></div>
+            <div class="zoom-cell"><img src="images/ava256_crossexpr_comp/20220412--1326--BGR645__EXP_eyebrow_0_ours.jpg" alt="Ours"><div class="zoom-inset inset-a zrow-ban1a" style="background-image:url('images/ava256_crossexpr_comp/20220412--1326--BGR645__EXP_eyebrow_0_ours.jpg')"></div><div class="zoom-inset inset-b zrow-ban1b" style="background-image:url('images/ava256_crossexpr_comp/20220412--1326--BGR645__EXP_eyebrow_0_ours.jpg')"></div></div>
+            <div class="zoom-cell"><img src="images/ava256_crossexpr_comp/20220412--1326--BGR645__EXP_eyebrow_0_ours_ban.jpg" alt="Ours+BAN"><div class="zoom-inset inset-a zrow-ban1a" style="background-image:url('images/ava256_crossexpr_comp/20220412--1326--BGR645__EXP_eyebrow_0_ours_ban.jpg')"></div><div class="zoom-inset inset-b zrow-ban1b" style="background-image:url('images/ava256_crossexpr_comp/20220412--1326--BGR645__EXP_eyebrow_0_ours_ban.jpg')"></div></div>
+            <div class="zoom-cell"><img src="images/ava256_crossexpr_comp/20220412--1326--BGR645__EXP_eyebrow_0_gt.jpg" alt="GT"><div class="zoom-inset inset-a zrow-ban1a" style="background-image:url('images/ava256_crossexpr_comp/20220412--1326--BGR645__EXP_eyebrow_0_gt.jpg')"></div><div class="zoom-inset inset-b zrow-ban1b" style="background-image:url('images/ava256_crossexpr_comp/20220412--1326--BGR645__EXP_eyebrow_0_gt.jpg')"></div></div>
+
+            <div><img src="images/ava256_crossexpr_comp/20230925--1644--KWL586__EXP_eyebrow_0_input.jpg" alt="Input"></div>
+            <div class="zoom-cell"><img src="images/ava256_crossexpr_comp/20230925--1644--KWL586__EXP_eyebrow_0_avat3r.jpg" alt="Avat3r"><div class="zoom-inset inset-a zrow-ban2a" style="background-image:url('images/ava256_crossexpr_comp/20230925--1644--KWL586__EXP_eyebrow_0_avat3r.jpg')"></div><div class="zoom-inset inset-b zrow-ban2b" style="background-image:url('images/ava256_crossexpr_comp/20230925--1644--KWL586__EXP_eyebrow_0_avat3r.jpg')"></div></div>
+            <div class="zoom-cell"><img src="images/ava256_crossexpr_comp/20230925--1644--KWL586__EXP_eyebrow_0_fastgha.jpg" alt="FastGHA"><div class="zoom-inset inset-a zrow-ban2a" style="background-image:url('images/ava256_crossexpr_comp/20230925--1644--KWL586__EXP_eyebrow_0_fastgha.jpg')"></div><div class="zoom-inset inset-b zrow-ban2b" style="background-image:url('images/ava256_crossexpr_comp/20230925--1644--KWL586__EXP_eyebrow_0_fastgha.jpg')"></div></div>
+            <div class="zoom-cell"><img src="images/ava256_crossexpr_comp/20230925--1644--KWL586__EXP_eyebrow_0_ours.jpg" alt="Ours"><div class="zoom-inset inset-a zrow-ban2a" style="background-image:url('images/ava256_crossexpr_comp/20230925--1644--KWL586__EXP_eyebrow_0_ours.jpg')"></div><div class="zoom-inset inset-b zrow-ban2b" style="background-image:url('images/ava256_crossexpr_comp/20230925--1644--KWL586__EXP_eyebrow_0_ours.jpg')"></div></div>
+            <div class="zoom-cell"><img src="images/ava256_crossexpr_comp/20230925--1644--KWL586__EXP_eyebrow_0_ours_ban.jpg" alt="Ours+BAN"><div class="zoom-inset inset-a zrow-ban2a" style="background-image:url('images/ava256_crossexpr_comp/20230925--1644--KWL586__EXP_eyebrow_0_ours_ban.jpg')"></div><div class="zoom-inset inset-b zrow-ban2b" style="background-image:url('images/ava256_crossexpr_comp/20230925--1644--KWL586__EXP_eyebrow_0_ours_ban.jpg')"></div></div>
+            <div class="zoom-cell"><img src="images/ava256_crossexpr_comp/20230925--1644--KWL586__EXP_eyebrow_0_gt.jpg" alt="GT"><div class="zoom-inset inset-a zrow-ban2a" style="background-image:url('images/ava256_crossexpr_comp/20230925--1644--KWL586__EXP_eyebrow_0_gt.jpg')"></div><div class="zoom-inset inset-b zrow-ban2b" style="background-image:url('images/ava256_crossexpr_comp/20230925--1644--KWL586__EXP_eyebrow_0_gt.jpg')"></div></div>
+        </div>
+    </figure>
+</section>
+
+<!-- §5 QUALITATIVE COMPARISON -->
+<section id="qualitative" class="fade-in">
+    <div class="section-header">
+        <span class="section-number">05</span>
+        <div>
+            <h2>Qualitative Comparison</h2>
+        </div>
+    </div>
+
+    <figure class="video-fig video-switcher">
+        <figcaption>
+            <strong>Video comparison on Ava-256.</strong>
+            Our method produces sharper facial details (e.g. eyes/teeth/wrinkles) and better expression transfer.
+            FastGHA tends to produce over-smoothed textures and Avat3r does not preserve the identity well.
+        </figcaption>
+        <div class="video-frame" style="aspect-ratio: 2702 / 562;">
+            <video id="qual-video" controls preload="metadata" playsinline width="2702" height="562">
+                <source src="videos/comparison/20220406--1314--PGO261__EXP_head002_0002.mp4" type="video/mp4">
+                Your browser does not support HTML5 video.
+            </video>
+        </div>
+        <div class="thumb-bar" id="qual-thumbs">
+            <div class="thumb active" data-src="videos/comparison/20220406--1314--PGO261__EXP_head002_0002.mp4"><canvas></canvas><span>PGO261 head</span></div>
+            <div class="thumb" data-src="videos/comparison/20230322--1706--IBQ026__EXP_jaw004_0002.mp4"><canvas></canvas><span>IBQ026 jaw</span></div>
+            <div class="thumb" data-src="videos/comparison/20230413--1031--PDG961__EXP_head002_0000.mp4"><canvas></canvas><span>PDG961 head</span></div>
+            <div class="thumb" data-src="videos/comparison/20230717--0836--PSV686__EXP_cheek002_0003.mp4"><canvas></canvas><span>PSV686 cheek</span></div>
+            <div class="thumb" data-src="videos/comparison/20230808--1157--YJF815__EXP_eyebrow_0002.mp4"><canvas></canvas><span>YJF815 brow</span></div>
+        </div>
+    </figure>
+
+    <figure>
+        <figcaption><strong>Image comparison on Ava-256.</strong> Region zoom-ins highlight quality differences between Ours and prior work.</figcaption>
+        <div class="image-grid five-col">
+            <div><div class="cap">Input</div></div>
+            <div><div class="cap">Avat3r</div></div>
+            <div><div class="cap">FastGHA</div></div>
+            <div><div class="cap">Ours</div></div>
+            <div><div class="cap">GT</div></div>
+
+            <div><img src="images/ava256_comp/YJF815_input.jpg" alt="Input"></div>
+            <div class="zoom-cell"><img src="images/ava256_comp/YJF815_avat3r.jpg" alt="Avat3r"><div class="zoom-inset inset-a zrow-comp1a" style="background-image:url('images/ava256_comp/YJF815_avat3r.jpg')"></div><div class="zoom-inset inset-b zrow-comp1b" style="background-image:url('images/ava256_comp/YJF815_avat3r.jpg')"></div></div>
+            <div class="zoom-cell"><img src="images/ava256_comp/YJF815_fastgha.jpg" alt="FastGHA"><div class="zoom-inset inset-a zrow-comp1a" style="background-image:url('images/ava256_comp/YJF815_fastgha.jpg')"></div><div class="zoom-inset inset-b zrow-comp1b" style="background-image:url('images/ava256_comp/YJF815_fastgha.jpg')"></div></div>
+            <div class="zoom-cell"><img src="images/ava256_comp/YJF815_ours.jpg" alt="Ours"><div class="zoom-inset inset-a zrow-comp1a" style="background-image:url('images/ava256_comp/YJF815_ours.jpg')"></div><div class="zoom-inset inset-b zrow-comp1b" style="background-image:url('images/ava256_comp/YJF815_ours.jpg')"></div></div>
+            <div class="zoom-cell"><img src="images/ava256_comp/YJF815_gt.jpg" alt="GT"><div class="zoom-inset inset-a zrow-comp1a" style="background-image:url('images/ava256_comp/YJF815_gt.jpg')"></div><div class="zoom-inset inset-b zrow-comp1b" style="background-image:url('images/ava256_comp/YJF815_gt.jpg')"></div></div>
+
+            <div><img src="images/ava256_comp/BGR645_input.jpg" alt="Input"></div>
+            <div class="zoom-cell"><img src="images/ava256_comp/BGR645_avat3r.jpg" alt="Avat3r"><div class="zoom-inset inset-a zrow-comp2a" style="background-image:url('images/ava256_comp/BGR645_avat3r.jpg')"></div><div class="zoom-inset inset-b zrow-comp2b" style="background-image:url('images/ava256_comp/BGR645_avat3r.jpg')"></div></div>
+            <div class="zoom-cell"><img src="images/ava256_comp/BGR645_fastgha.jpg" alt="FastGHA"><div class="zoom-inset inset-a zrow-comp2a" style="background-image:url('images/ava256_comp/BGR645_fastgha.jpg')"></div><div class="zoom-inset inset-b zrow-comp2b" style="background-image:url('images/ava256_comp/BGR645_fastgha.jpg')"></div></div>
+            <div class="zoom-cell"><img src="images/ava256_comp/BGR645_ours.jpg" alt="Ours"><div class="zoom-inset inset-a zrow-comp2a" style="background-image:url('images/ava256_comp/BGR645_ours.jpg')"></div><div class="zoom-inset inset-b zrow-comp2b" style="background-image:url('images/ava256_comp/BGR645_ours.jpg')"></div></div>
+            <div class="zoom-cell"><img src="images/ava256_comp/BGR645_gt.jpg" alt="GT"><div class="zoom-inset inset-a zrow-comp2a" style="background-image:url('images/ava256_comp/BGR645_gt.jpg')"></div><div class="zoom-inset inset-b zrow-comp2b" style="background-image:url('images/ava256_comp/BGR645_gt.jpg')"></div></div>
+
+            <div><img src="images/ava256_comp/PSV686_input.jpg" alt="Input"></div>
+            <div class="zoom-cell"><img src="images/ava256_comp/PSV686_avat3r.jpg" alt="Avat3r"><div class="zoom-inset inset-a zrow-comp3a" style="background-image:url('images/ava256_comp/PSV686_avat3r.jpg')"></div><div class="zoom-inset inset-b zrow-comp3b" style="background-image:url('images/ava256_comp/PSV686_avat3r.jpg')"></div></div>
+            <div class="zoom-cell"><img src="images/ava256_comp/PSV686_fastgha.jpg" alt="FastGHA"><div class="zoom-inset inset-a zrow-comp3a" style="background-image:url('images/ava256_comp/PSV686_fastgha.jpg')"></div><div class="zoom-inset inset-b zrow-comp3b" style="background-image:url('images/ava256_comp/PSV686_fastgha.jpg')"></div></div>
+            <div class="zoom-cell"><img src="images/ava256_comp/PSV686_ours.jpg" alt="Ours"><div class="zoom-inset inset-a zrow-comp3a" style="background-image:url('images/ava256_comp/PSV686_ours.jpg')"></div><div class="zoom-inset inset-b zrow-comp3b" style="background-image:url('images/ava256_comp/PSV686_ours.jpg')"></div></div>
+            <div class="zoom-cell"><img src="images/ava256_comp/PSV686_gt.jpg" alt="GT"><div class="zoom-inset inset-a zrow-comp3a" style="background-image:url('images/ava256_comp/PSV686_gt.jpg')"></div><div class="zoom-inset inset-b zrow-comp3b" style="background-image:url('images/ava256_comp/PSV686_gt.jpg')"></div></div>
+        </div>
+    </figure>
+</section>
+
+<!-- §6 IN-THE-WILD -->
+<section id="in-the-wild" class="fade-in">
+    <div class="section-header">
+        <span class="section-number">06</span>
+        <div>
+            <h2>In-The-Wild</h2>
+        </div>
+    </div>
+
+    <figure class="video-fig">
+        <figcaption>
+            <strong>In-the-wild self- and cross-reenactment.</strong>
+            Expression codes are extracted with ARKit from an iPhone video and used to drive avatars reconstructed from a single input image, both for the same subject (self-reenactment) and for other subjects (cross-reenactment).
+            All models receive the exact same inputs and use the single-input-view configuration.
+            Our model reconstructs identity with high detail, whereas FastGHA and Avat3r exhibit substantially greater degradation in fine detail and identity preservation.
+        </figcaption>
+        <video controls autoplay muted loop playsinline>
+            <source src="videos/comparison_IMG_9888.mp4" type="video/mp4">
+            Your browser does not support HTML5 video.
+        </video>
+    </figure>
+</section>
+
+<!-- §7 CITATION -->
+<section id="citation" class="fade-in">
+    <div class="section-header">
+        <span class="section-number">07</span>
+        <div>
+            <h2>Citation</h2>
+            <p class="section-desc">If you find this work useful, please cite us.</p>
+        </div>
+    </div>
+    <div class="citation-block">
+        <button class="citation-copy-btn" id="copy-bibtex" aria-label="Copy BibTeX">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+            Copy
+        </button>
+        <pre><code id="bibtex-code">@article{benlalah2026gharp,
+  title={GHARP: Real-time Gaussian Head Animation from Large-scale Reconstruction Prior},
+  author={Benlalah, Ali and Johari, Sepehr and Vitoria, Patricia and Kappeler, Armin and Sevastopolsky, Artem and Jung, Alexander and Fanelli, Gabriele and Mader, Kevin and Breitenstein, Manuel and Pl{\"u}ss, Claudia and R{\"u}egg, Jan and Biland, Simon and Etterlin, Thomas and Kostiaev, Dmitry and Deschler, Mathias and Amberg, Brian and Martin, Sebastian},
+  journal={arXiv preprint arXiv:2610.10945},
+  year={2026},
+  url={https://arxiv.org/abs/2610.10945v1}
+}</code></pre>
+    </div>
+</section>
+
+<footer>
+    <div class="footer-content">
+        <p class="footer-title">GHARP</p>
+        <p>Real-time Gaussian Head Animation from Large-scale Reconstruction Prior</p>
+        <div class="footer-separator"></div>
+        <p class="footer-venue">&copy; 2026 Apple. All rights reserved.</p>
+    </div>
+</footer>
+
+<!-- Scroll to top -->
+<button class="scroll-top" id="scroll-top" aria-label="Scroll to top">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="18 15 12 9 6 15"/></svg>
+</button>
+
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+
+    /* ── Fade-in on scroll ──────────────────────────────────────────────── */
+    const fadeEls = document.querySelectorAll('.fade-in');
+    const fadeObs = new IntersectionObserver((entries) => {
+        entries.forEach(entry => {
+            if (entry.isIntersecting) {
+                entry.target.classList.add('visible');
+                fadeObs.unobserve(entry.target);
+            }
+        });
+    }, { threshold: 0.08 });
+    fadeEls.forEach(el => fadeObs.observe(el));
+
+    /* ── Sticky-nav active section highlight ───────────────────────────── */
+    const navLinks = document.querySelectorAll('#main-nav a');
+    const sections = Array.from(navLinks).map(a => document.querySelector(a.getAttribute('href'))).filter(Boolean);
+    const sectionObs = new IntersectionObserver((entries) => {
+        entries.forEach(entry => {
+            if (entry.isIntersecting) {
+                navLinks.forEach(a => a.classList.toggle('active', a.getAttribute('href') === '#' + entry.target.id));
+            }
+        });
+    }, { rootMargin: '-40% 0px -55% 0px' });
+    sections.forEach(s => sectionObs.observe(s));
+
+    /* ── Scroll-to-top button ───────────────────────────────────────────── */
+    const scrollBtn = document.getElementById('scroll-top');
+    if (scrollBtn) {
+        window.addEventListener('scroll', () => {
+            scrollBtn.classList.toggle('visible', window.scrollY > 600);
+        });
+        scrollBtn.addEventListener('click', () => {
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+        });
+    }
+
+    /* ── Copy BibTeX button ─────────────────────────────────────────────── */
+    const copyBtn = document.getElementById('copy-bibtex');
+    if (copyBtn) {
+        copyBtn.addEventListener('click', () => {
+            const code = document.getElementById('bibtex-code').textContent;
+            navigator.clipboard.writeText(code).then(() => {
+                copyBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> Copied!';
+                setTimeout(() => {
+                    copyBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy';
+                }, 2000);
+            });
+        });
+    }
+
+    /* ── Video switcher with thumbnail navigation ──────────────────────── */
+    function initVideoSwitcher(videoId, thumbsId) {
+        const video = document.getElementById(videoId);
+        const bar = document.getElementById(thumbsId);
+        if (!video || !bar) return;
+        const thumbs = bar.querySelectorAll('.thumb');
+
+        function setActive(el) {
+            thumbs.forEach(t => t.classList.remove('active'));
+            el.classList.add('active');
+            const src = el.dataset.src;
+            const wasPlaying = !video.paused;
+            video.pause();
+            const source = video.querySelector('source');
+            if (source) source.src = src;
+            video.src = src;
+            video.load();
+            if (wasPlaying) video.play().catch(function () {});
+        }
+
+        thumbs.forEach(t => t.addEventListener('click', () => setActive(t)));
+
+        thumbs.forEach(el => {
+            const canvas = el.querySelector('canvas');
+            if (!canvas) return;
+            const tmp = document.createElement('video');
+            tmp.src = el.dataset.src;
+            tmp.muted = true;
+            tmp.preload = 'auto';
+            tmp.playsInline = true;
+            tmp.crossOrigin = 'anonymous';
+            tmp.addEventListener('loadeddata', () => { tmp.currentTime = 0.01; });
+            tmp.addEventListener('seeked', () => {
+                canvas.width = tmp.videoWidth;
+                canvas.height = tmp.videoHeight;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(tmp, 0, 0, canvas.width, canvas.height);
+                tmp.src = '';
+                tmp.load();
+            });
+        });
+    }
+
+    initVideoSwitcher('xid-video', 'xid-thumbs');
+    initVideoSwitcher('qual-video', 'qual-thumbs');
+    initVideoSwitcher('ban-video', 'ban-thumbs');
+});
+</script>
+
+</body>
+</html>
